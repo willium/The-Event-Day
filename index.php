@@ -26,7 +26,10 @@ $app->configureMode('development', function () use ($app) {
     ));
 });
 
-$app->config('app', '[APP ID]');
+//# Set your API_Key and Client secret                #//
+//#   Available here: https://eventbrite.com/api/key  #//
+$app->config('api_key', 'YOUR_API_KEY_HERE');
+$app->config('client_secret', 'YOUR_CLIENT_SECRET_HERE');
 
 function authenticate() {
     $app = Slim::getInstance();
@@ -42,9 +45,9 @@ $app->get('/', function () use ($app) {
     $params['page'] = "home";
 
     if(!App::user())
-    $params['button'] = "Connect";
+        $params['button'] = "Connect";
     else
-    $params['button'] = "Logout";
+        $params['button'] = "Logout";
 
     $params['errors'] = array();
 
@@ -55,30 +58,41 @@ $app->map('/connect/', function () use ($app) {
     $params = App::start();
     $params['title'] = "Connect";
     $params['page'] = "connect";
-    $params['button'] = "Connect";
     $params['errors'] = array();
-    if($app->request()->isPost()) {
-        $post = $app->request()->post();
-        $connect = App::connect($post['user'], $post['password']);
-        if($connect['success']) {
-            $params['key'] = $connect['key'];
-            App::begin($connect['key'], 1);
-            $app->redirect("/events/");
-        }
-        else{
-            $params['errors'][] = $connect['message'];
+
+    # This user already has an active session
+    if( App::user() ){
+        $user = App::getUser();
+        $params['user_email'] = $user->email; 
+        $params['user_name'] = $user->first_name . ' ' . $user->last_name;         
+        $params['button'] = "Logout";
+    }else{
+        # This user is not yet authenticated 
+        #  (it is their first visit, or they were redirected here after logout)
+        if( $app->request()->get('code') ){
+            # This user has just authenticated, get their access token and store it
+            $connect = App::connect( $app->request()->get('code') );
+            if(array_key_exists('error', $connect)){
+                $params['errors'][] = $connect['error'];
+            }else if(array_key_exists('access_token', $connect)){
+                App::begin($connect['access_token'], 1);
+                $user = App::getUser( $connect['access_token'] );
+                $params['user_email'] = $user->email; 
+                $params['user_name'] = $user->first_name . ' ' . $user->last_name;         
+                $params['button'] = "Logout";
+            }
+        }else if( $app->request()->get('error') == 'access_denied' ){
+            $params['errors'][] = "Access Denied";
         }
     }
+
+    $params['oauth_link'] = App::getOauthLink(); 
     $app->render('app.tpl', $params);
 })->via('GET', 'POST');
 
 $app->get('/logout/', function () use ($app) {
     App::end();
-    $return = $app->request()->get('return');
-    if($return == null)
     $app->redirect("/");
-    else
-    $app->redirect($return);
 });
 
 $app->get('/events/', 'authenticate', function () use ($app){
@@ -88,15 +102,18 @@ $app->get('/events/', 'authenticate', function () use ($app){
     $params['button'] = "Logout";
     $params['errors'] = array();
 
-    $params['events'] = App::client()->user_list_events();
-
+    try{
+      $params['events'] = App::client()->user_list_events(array('event_statuses' => 'live,started'))->events;
+    }catch( Exception $e){
+      $params['events'] = array();
+    }
     $app->render('app.tpl', $params);
 });
 
 $app->map('/event/:id/(:tool)', 'authenticate', function ($id, $tool = null) use ($app) {
     $params = App::start();
     $params['title'] = "Tools";
-    
+    $params['button'] = "Logout";
     $params['page'] = "tools";
     $tools = App::tools();
 
@@ -112,24 +129,31 @@ $app->map('/event/:id/(:tool)', 'authenticate', function ($id, $tool = null) use
         $post = $app->request()->post();
         if($tool == "random") {
             if(isset($post['count']) && !is_null($post['count']) && trim($post['count']) != '' && is_numeric($post['count'])) {
-                $params['count'] = $post['count'];
-                $params['attendees'] = App::attendeesForEvent($id);
+                $attendees = App::attendeesForEvent($id);
+                $params['attendees'] = $attendees;
+                $params['count'] = ($post['count'] < count($attendees)) ? $post['count'] : count($attendees);
             }
         }
         else if($tool == "teams") {
-            if($post['teams'] == "" || $post['teams'] == 0) $post['teams'] = "?";
-            if($post['of'] == "" || $post['of'] == 0) $post['of'] = "?";
+            if( !isset($post['teams']) || trim($post['teams']) == "" || $post['teams'] == 0 || $post['teams'] == "0" || !is_numeric($post['teams'])){ 
+                $teams = "?";
+            }else{
+                $teams = $post['teams'];
+            }
+            if( !isset($post['of']) || trim($post['of']) == "" || $post['of'] == 0 || $post['of'] == "0" || !is_numeric($post['of'])) {
+                $of = "?";
+            }else{
+                $of = $post['of'];
+            }
 
-            $_teams = isset($post['teams']) && !is_null($post['teams']) && trim($post['teams']) != '' && (is_numeric($post['teams']) || trim($post['teams']) == "?");
-            $_of = isset($post['of']) && !is_null($post['of']) && trim($post['of']) != '' && (is_numeric($post['of']) || trim($post['of']) == "?");
-            $_both = trim($post['of']) == "?" && trim($post['teams']) == "?";
-            if($_teams && $_of && !$_both) {
-                $params['teams'] = App::teamsForEvent($id, $post['teams'], $post['of']);
+            if($teams == "?" && $of == "?") {
+                $params['teams'] = App::teamsForEvent($id, "2", "?");
+            }else{
+                $params['teams'] = App::teamsForEvent($id, $teams, $of);
             }
         }
     }
 
-    $params['button'] = "Logout";
     $params['id'] = $id;
     $params['errors'] = array();
     $app->render('app.tpl', $params);
