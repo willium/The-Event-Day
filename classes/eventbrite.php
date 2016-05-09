@@ -19,7 +19,11 @@ class Eventbrite {
         $this->api_url = parse_url($this->api_endpoint);
         $this->auth_tokens = array();
         if(is_array($tokens)){
-            $this->auth_tokens = $tokens;
+            if(array_key_exists('access_code', $tokens)){
+                $this->auth_tokens = $this->oauth_handshake( $tokens );
+            }else{
+                $this->auth_tokens = $tokens;
+            }
         }else{
             $this->auth_tokens['app_key'] = $tokens;
             if( $password ){
@@ -30,6 +34,41 @@ class Eventbrite {
               $this->auth_tokens['user_key'] = $user;
             }
         }
+    }
+
+    function oauth_handshake( $tokens ){
+        $params = array( 
+            'grant_type'=>'authorization_code', 
+            'client_id'=> $tokens['app_key'], 
+            'client_secret'=> $tokens['client_secret'], 
+            'code'=> $tokens['access_code'] );
+
+        $request_url = $this->api_url['scheme'] . "://" . $this->api_url['host'] . '/oauth/token';
+        
+        // TODO: Replace the cURL code with something a bit more modern - 
+        //$context = stream_context_create(array('http' => array( 
+        //    'method'  => 'POST', 
+        //    'header'  => "Content-type: application/x-www-form-urlencoded\r\n", 
+        //    'content' => http_build_query($params)))); 
+        //$json_data = file_get_contents( $request_url, false, $context );
+
+        // CURL-POST implementation - 
+        // WARNING: This code may require you to install the php5-curl package
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_POST, TRUE);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($params));
+        curl_setopt($ch, CURLOPT_URL, $request_url); 
+        curl_setopt($ch, CURLOPT_HEADER, FALSE);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
+        $json_data = curl_exec($ch);
+        $resp_info = curl_getinfo($ch);
+        curl_close($ch); 
+
+        $response = get_object_vars(json_decode($json_data));
+        if( !array_key_exists('access_token', $response) || array_key_exists('error', $response) ){
+            throw new Exception( $response['error_description'] );
+        }
+        return array_merge($tokens, $response);
     }
 
     // For information about available API methods, see: http://developer.eventbrite.com/doc/
@@ -72,8 +111,12 @@ class Eventbrite {
     }
 
     /*
-     * Widgets:
+     * Helpers:
      */
+    public static function oauthNextStep( $key ) {
+        return 'https://www.eventbrite.com/oauth/authorize?response_type=code&client_id='.$key;
+    }
+
     public static function eventList($evnts= array(), $callback='eventListRow', $options=false) {
         $html='<div class="eb_event_list">';
         if( isset($evnts->events)){
@@ -107,6 +150,9 @@ class Eventbrite {
             $venue_name = $evnt->venue->name;
         }
 
+    /*
+     * Widgets:
+     */
         return "<div class='eb_event_list_item' id='evnt_div_" . $evnt->id ."'><span class='eb_event_list_date'>" . strftime('%a, %B %e', $time) . "</span><span class='eb_event_list_time'>" . strftime('%l:%M %P', $time) . "</span>" ."<a class='eb_event_list_title' href='".$evnt->url."'>".$evnt->title."</a><span class='eb_event_list_location'>" . $venue_name . "</span></div>\n";
     }
 
